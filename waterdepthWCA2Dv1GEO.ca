@@ -1,0 +1,112 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// Update the water depth for the WCA2Dv1 model.
+// This version store the total amount of flux in m^3 passed through the edge.
+// The Water depth of the boundary cells (bit 31
+// mask) is updated. The bounday cell should have only influx.
+
+// ATTENTION, This version add later flux.  It uses the spatial RAIN
+// from a table. The indices are retrieved from the special bits of
+// the mask which position are passed as argoments in spos epos
+// (start/end).
+
+// ATTENTION This is the function that works with the geographic
+// coordinate system for a regular square grid with Von Neumann neighbourhood.
+
+#ifdef cl_nv_pragma_unroll
+#pragma OPENCL EXTENSION cl_nv_pragma_unroll : enable
+#endif
+
+CA_FUNCTION waterdepthWCA2Dv1GEO(CA_GRID grid, CA_CELLBUFF_REAL_IO WD, CA_EDGEBUFF_REAL_I OUTF, 
+				 CA_EDGEBUFF_REAL_IO TOTOUTF, CA_CELLBUFF_STATE_I MASK, 
+				 CA_TABLE_REAL_I RAIN, CA_GLOB_STATE_I spos, CA_GLOB_STATE_I epos,
+				 CA_GLOB_REAL_I dt, CA_GLOB_REAL_I updatedt,
+				 CA_CELLBUFF_REAL_I RATIO, CA_GLOB_REAL_I dy)
+{
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+
+  // Create the array which will contain the water fluxes on the
+  // edges.
+  CA_ARRAY_CREATE(grid, CA_REAL, FLUXES, caEdges+1);
+
+  // Create the array which will contain the total water fluxes on the  edges.
+  CA_ARRAY_CREATE(grid, CA_REAL, TOTFLUXES, caEdges+1);
+
+  // Read Mask.
+  CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+
+  // Read bit 0  (false the main cell has nodata)
+  CA_STATE bit0  = caReadBitsState(mask,0,1);
+
+  // Read bit 31 (true if the main cell is nodata in at least one
+  // neighbour has data)
+  CA_STATE bit31  = caReadBitsState(mask,31,32);
+
+  // If the main cell has no data and none of the neighbour has data,
+  // then do nothing.
+  if(bit0 == 0 && bit31 == 0)
+    return;
+
+  // Retrieve the 0 of the spatial rain.
+  CA_STATE idx = caReadBitsState(mask,spos,epos);
+  
+  // Reteieve the rain from the table.
+  CA_REAL rain = caReadTableReal(grid,RAIN,idx);
+
+  // Retrive the current value of the water depth.
+  CA_REAL  wd  = caReadCellBuffReal(grid,WD,0);
+
+  // Retrive the area of the main cell.
+  // Using dy and the ration of the main cell.
+  CA_REAL  area = dy * dy * caReadCellBuffReal(grid,RATIO,0);
+
+  // Read the fluxes of the main cell.
+  caReadEdgeBuffRealEdgeArray(grid, OUTF,0, FLUXES);
+
+  // Read the total fluxes of the main cell.
+  caReadEdgeBuffRealEdgeArray(grid, TOTOUTF, 0, TOTFLUXES);
+
+  CA_REAL outflux = 0.0;
+
+  // Loop through the edges.
+#pragma unroll 
+  for(int e=1; e<=caEdges; e++)
+  {
+    // If the edge is one of the edges that can be updated without
+    // overwriting the buffer, the outflux is positive otherwise is
+    // negative.
+    if(e<=caUpdateEdges(grid))
+    {
+      outflux += FLUXES[e];
+      // Write then new total flux.
+      caWriteEdgeBuffReal(grid, TOTOUTF, e, TOTFLUXES[e]+FLUXES[e]);
+    }
+    else
+      outflux -= FLUXES[e];    
+  }
+    
+  // Remove the outflux volume from the next step of the water depth.
+  // Add the rain
+  caWriteCellBuffReal(grid,WD,wd-(outflux/area)+rain);
+
+}

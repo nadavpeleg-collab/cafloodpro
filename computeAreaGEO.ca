@@ -1,0 +1,50 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// Compute the area in each cell
+
+// ATTENTION This is the function that works with the geographic
+// coordinate system for a regular square grid.
+
+CA_FUNCTION computeAreaGEO(CA_GRID grid, CA_CELLBUFF_REAL_IO TMP,CA_CELLBUFF_STATE_I MASK,
+			   CA_CELLBUFF_REAL_I RATIO, CA_GLOB_REAL_I dy)
+{
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+
+  // Read Mask.
+  CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+
+  // Read bit 0  (false the main cell has nodata)
+  CA_STATE bit0  = caReadBitsState(mask,0,1);
+
+  // If the main cell has no data,
+  // then do nothing.
+  if(bit0 == 0)
+    return;
+
+  // Retrive the area of the main cell.
+  // Using dy and the ration of the main cell.
+  CA_REAL  area = dy * dy * caReadCellBuffReal(grid,RATIO,0);
+
+  // Write the are in the buffer
+  caWriteCellBuffReal(grid,TMP,area);
+}

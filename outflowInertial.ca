@@ -1,0 +1,150 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// This compute all the fluxes to the downstream cell using the inertial formula.
+
+CA_FUNCTION outflowInertial(CA_GRID grid, CA_EDGEBUFF_REAL_IO OUTF1, CA_EDGEBUFF_REAL_I PREVF,
+			    CA_CELLBUFF_REAL_I ELV, CA_CELLBUFF_REAL_I WD, 
+			    CA_CELLBUFF_STATE_I MASK, CA_ALARMS_O ALARMS, 
+			    CA_TABLE_REAL_I ROUGHSQ, CA_GLOB_STATE_I spos, CA_GLOB_STATE_I epos,
+			    CA_GLOB_REAL_I ignore_wd, 
+			    CA_GLOB_REAL_I dt, CA_GLOB_REAL_I prev_dt)
+{					       
+
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+
+  // Create an array which will contain various water values during the
+  // computation for each neighbourh cell, in the following order:
+  // 1) WATER depth
+  // 2) WATER level
+  CA_ARRAY_CREATE(grid, CA_REAL, WATER,caNeighbours+1);
+  
+  // Create an array which will contain elevation
+  CA_ARRAY_CREATE(grid, CA_REAL, ELVA,caNeighbours+1);
+
+  // Create the array which will contain the  water fluxes on
+  // the edges for the last step.
+  CA_ARRAY_CREATE(grid, CA_REAL, PREVFLUXES, caEdges+1);
+
+  // Read Mask.
+  CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+
+  // The water depth of the main cell 
+  CA_REAL wdmain = caReadCellBuffReal(grid,WD,0);
+
+  // Read bit 0  (false the main cell has nodata)
+  CA_STATE bit0   = caReadBitsState(mask,0,1);
+
+  // If the main cell has no data (bit0 is false ) or there is no
+  // water do not compute the cell.
+  if(!(bit0 == 0 ||  wdmain < ignore_wd))
+  {  
+    // Read the water depth of the neighbourhood cells (store temporarily into WATER).
+    caReadCellBuffRealCellArray(grid,WD,WATER);
+    
+    // Read the elevation of the neighbourhood cells
+    caReadCellBuffRealCellArray(grid,ELV,ELVA);
+    
+    // Read the total fluxes of the main cell of the previous step
+    caReadEdgeBuffRealEdgeArray(grid, PREVF,0, PREVFLUXES);
+
+    // Retrieve the index of the spatial roughness.
+    CA_STATE idx = caReadBitsState(mask,spos,epos);
+
+    // Retrieve the square of the roughness from the table.
+    CA_REAL roughsq = caReadTableReal(grid,ROUGHSQ,idx);
+      
+    // Compute the water level of the cells since WATER 
+    // contein  water detph.
+    for(int k=0; k<=caNeighbours; ++k)
+      WATER[k]+=ELVA[k];    
+    
+    // Common value
+    CA_REAL gdt        = 9.81*dt;
+    // The power of the radious 
+    CA_REAL R_pow  = caPowReal(wdmain,(4.0/3.0));
+
+    // Critical flux.
+    // We need to limit the maximum flux otherwise there are
+    // instability.
+    CA_REAL max_flux_nodx = caSqrtReal(9.81*wdmain)*wdmain * dt;
+
+    // Maximum Outflux
+    CA_REAL outflux = 0.0;
+
+    // Compute the flux to the downstream cells.
+    for(int k=1; k<=caNeighbours; ++k)
+    {   
+      // Change that each outflux is
+      // positive and each influx is negative.  
+      if(k<=caUpdateEdges(grid))
+	PREVFLUXES[k] = PREVFLUXES[k];
+      else
+	PREVFLUXES[k] = -PREVFLUXES[k];
+				
+      // Compute the difference in water level
+      // Lets make sure delwl is not bigger than the water depth
+      // available.
+      CA_REAL delwl = caMinReal(WATER[0] - WATER[k], wdmain);      
+
+      // Consider only downstrea cell or if there is no water level
+      // difference, only the cell with previous outflow.
+      if(delwl>0.0 || (delwl==0 && PREVFLUXES[k]>0))
+      {
+	// Retrieve the  values	
+	CA_REAL dx     = caLength(grid,0,k);
+	CA_REAL dist   = caDistance(grid,k);
+	CA_REAL A      = wdmain*dx;
+	CA_REAL Qp     = PREVFLUXES[k]/prev_dt; 
+		
+	// Compute the flow using the inertial formual
+	CA_REAL Qn     = (Qp + gdt*(A*(delwl/dist))) / 
+	  (1+gdt*((roughsq*caAbsReal(Qp))/(R_pow*A)));
+	
+	// Compute the flux limited by the maximum critical flux.
+	CA_REAL flux   = caMinReal(Qn * dt , max_flux_nodx*dx);  	
+
+	// Maximum outflux
+	outflux = caMaxReal(flux,outflux);
+
+	// If the edge is one of the edges that can be updated without
+	// overwriting the buffer, the outflux is positive otherwise is
+	// negative.
+	if(k > caUpdateEdges(grid))
+	  flux=-flux;
+	
+	// Set flux into the edge buffer.
+	caWriteEdgeBuffReal(grid,OUTF1,k,flux);
+      }      
+    }
+    
+    // Check that the maximum outflux is larger than zero. Check if
+    // the cell is in the border of the box and if it is the case set an
+    // alarm.
+    CA_STATE box_mask = caBoxStatus(grid);
+    if(outflux>0.0 && box_mask>0)
+      caActivateAlarmMask(grid, ALARMS,box_mask,caNeighbours+1);
+
+
+  } // Now water or no data cell.
+
+}

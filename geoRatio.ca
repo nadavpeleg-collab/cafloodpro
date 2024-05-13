@@ -1,0 +1,43 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// Compute the geographic ratio for each cell of the grid.
+// This is the dx/dy ratio which change depending on the lat/long position.
+// The dy value do not change, only the dx. 
+// R is the earth radious in KM.
+// l is the length of a side in radian.
+// ATTENTION This work only on a regular square grid.
+
+CA_FUNCTION geoRatio(CA_GRID grid, CA_CELLBUFF_REAL_IO  RATIO,  
+		     CA_GLOB_REAL_I dy, CA_GLOB_REAL_I R, CA_GLOB_REAL_I l)
+{
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+    
+  // Get the YCoordinate of the centre of the cell in radian .
+  CA_REAL  ycoo = caYCoo(grid,0)*(PI/180.0);
+
+  // Get the dx in meters using the Equirectangular approximation
+  CA_REAL  dx = caAbsReal( (l)*caCosReal(ycoo) * R * 1000 );
+  
+  // Write the dx/dy ratio
+  caWriteCellBuffReal(grid,RATIO,(dx/dy));  
+}

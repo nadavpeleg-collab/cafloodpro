@@ -1,0 +1,89 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// computer band codes given a set of band values
+
+CA_FUNCTION banding(CA_GRID grid, 
+				CA_CELLBUFF_REAL_IO WD,
+				CA_CELLBUFF_STATE_IO BANDED_GRID,
+				CA_TABLE_REAL_I BANDS,
+				CA_CELLBUFF_STATE_I MASK,
+				CA_GLOB_STATE_I numberOfBands
+				)
+{
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+  
+  // Read Mask.
+  CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+
+  // Read bit 0  (false the main cell has nodata)
+  CA_STATE bit0  = caReadBitsState(mask,0,1);
+
+  // Read bit 31 (true if the main cell is nodata in at least one
+  // neighbour has data)
+  CA_STATE bit31  = caReadBitsState(mask,31,32);
+
+  // If the main cell has no data and none of the neighbour has data,
+  // then do nothing.
+  if(bit0 == 0 && bit31 == 0)
+    return;
+	
+	//----------------------------------------
+	
+	// Retrive the current value of the water depth.
+	CA_REAL  wd  = caReadCellBuffReal(grid,WD,0);
+	
+	
+	
+	// bands assumed to start at zero depth
+	CA_REAL  lastBand  = 0.0;
+	
+	CA_STATE band = 0;
+	
+	for ( unsigned int counter = 0; counter < numberOfBands; ++counter)
+	{
+		
+		// Reteieve the band from the table.
+		CA_REAL bandUpperLimit = caReadTableReal(grid,BANDS,counter);
+		
+		// if we're not the first band, we need a new lower level of the band
+		if(counter != 0){
+			lastBand  = caReadTableReal(grid,BANDS,counter-1);;
+		}
+		
+		
+		if(wd >= lastBand && wd < bandUpperLimit)
+		{
+			
+			band = counter +1;
+			
+		}
+		
+		
+		
+	}// end of looping to find band
+  
+  // write the band
+  caWriteCellBuffState(grid,BANDED_GRID, band );
+  
+
+}// end of banding ca function

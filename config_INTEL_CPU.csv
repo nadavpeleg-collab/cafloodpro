@@ -1,0 +1,5 @@
+Platform Name		, AMD
+Device Type		, CPU
+Device Number		, 0
+Device CU		, 0
+Warp Size		, 8

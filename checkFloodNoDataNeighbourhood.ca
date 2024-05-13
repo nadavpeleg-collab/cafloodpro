@@ -1,0 +1,111 @@
+/*
+    
+Copyright (c) 2016 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// 
+
+CA_FUNCTION checkFloodNoDataNeighbourhood(CA_GRID grid, 
+			   CA_CELLBUFF_REAL_I ELV, CA_CELLBUFF_REAL_I WD, 
+			   CA_CELLBUFF_STATE_I MASK,
+			   CA_CELLBUFF_STATE_IO RESULT,
+			   CA_GLOB_REAL_I noData)
+{					       
+	// Initialise the grid
+	CA_GRID_INIT(grid);
+	
+	// Read Mask.
+	CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+	
+	// Retrieve the water depth of the main cell.
+	CA_REAL  wdmain = caReadCellBuffReal(grid,WD,0);
+	
+	// Read bit 0  (false the main cell has nodata)
+	CA_STATE bit0  = caReadBitsState(mask,0,1);
+	
+	// Read bit 29 (true if in border)
+	//CA_STATE bit29  = caReadBitsState(mask,29,30);
+
+
+	
+	//-------------------------
+	// only check cells with water in them
+	if(wdmain > 0.0){
+		
+		//
+		CA_STATE code  = 0;
+	
+		// create arrays to store the neighbouring elevations 
+		CA_ARRAY_CREATE(grid, CA_REAL, elevations,caNeighbours+1);
+		
+		//and water depths
+		//CA_ARRAY_CREATE(grid, CA_REAL, waterDepths,caNeighbours+1);
+
+		CA_ARRAY_CREATE(grid, CA_STATE, masks,caNeighbours+1);
+
+		// Read the elvations of the neighbourhood cells (store temporarily into ELV).
+		caReadCellBuffRealCellArray(grid,ELV,elevations);
+
+		caReadCellBuffStateCellArray(grid,MASK,masks);
+
+
+		// if main cell is no_data and wet, state 1 ---should never happen?! code therefore cuaght before this kernel???
+		if(bit0 == 0){
+			//caWriteCellBuffState(grid,RESULT,1);
+			code = 1;
+
+		}
+		
+		CA_STATE neighbourWithNoData  = false;
+		CA_STATE neighbourWithBorder  = false;
+		
+		
+		#pragma unroll
+		for(int k=1; k<=caNeighbours; ++k){
+		  //WATER[k]=caMinReal(WATER[0] - WATER[k], wdmain); 
+		  
+		  if(elevations[k] == noData){
+			neighbourWithNoData  = true;
+		  }
+
+		  if(caReadBitsState(masks[k],29,30)==1){
+			neighbourWithBorder  = true;
+		  }
+		  
+		}// end of looping neighbours
+		
+		// if neighbouring cell is no_data and main wet, state 2
+		if(neighbourWithNoData){
+			//caWriteCellBuffState(grid,RESULT,2);
+			code = 2;
+		}
+
+		// if this cell is wet and neighbour a actual border, then code 4
+		if(neighbourWithBorder){
+			code = 4;
+		}
+		
+		//caWriteCellBuffState(grid,RESULT,2);
+		caWriteCellBuffState(grid,RESULT,code);
+		
+	}
+
+}// end of CA function
+
+

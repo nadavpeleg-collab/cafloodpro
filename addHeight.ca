@@ -1,0 +1,49 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// Add the height into a buffer.  
+
+
+CA_FUNCTION addHeight(CA_GRID grid, CA_CELLBUFF_REAL_IO BUFF, CA_CELLBUFF_STATE_I MASK, CA_TABLE_REAL_I HEIGHT)
+{
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+
+  // Retrive the value of the buffer
+  CA_REAL  value = caReadCellBuffReal(grid,BUFF,0);
+
+  // Read Mask.
+  CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+
+  // Read bit 0  (false the main cell is nodata)
+  //CA_STATE bit0  = caReadBitsState(mask,0,1);
+
+  // If the maask is 0 then no height to add
+  if(mask == 0)
+    return;
+	
+  // Reteieve the heigh to add from table
+  CA_REAL height = caReadTableReal(grid,HEIGHT,mask);
+
+
+  // Add the rain value+rain*dt/3600
+  caWriteCellBuffReal(grid,BUFF,value+height);
+}

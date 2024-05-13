@@ -1,0 +1,288 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// Compute the velocity as magnitude and direction. 
+// Compute the dt using Hunter formual 
+
+// ATTENTION! This version check if there is any in/out flux over an
+// elevation threshould and set an alarm.
+
+// ATTENTION, This version uses the inverse roughness from a
+// table. The indices are retrieved from the special bits of the mask
+// which position is passed as argoments in spos epos (start/end).
+
+CA_FUNCTION velocityDiffusivev2(CA_GRID grid, CA_CELLBUFF_REAL_IO V, CA_CELLBUFF_REAL_IO A,  CA_CELLBUFF_REAL_IO DT,
+			      CA_CELLBUFF_REAL_I WD, CA_CELLBUFF_REAL_I ELV, 
+			      CA_EDGEBUFF_REAL_IO OUTF, 
+			      CA_CELLBUFF_STATE_I MASK, CA_ALARMS_O ALARMS,
+			      CA_TABLE_REAL_I IROUGH, CA_GLOB_STATE_I spos, CA_GLOB_STATE_I epos,
+			      CA_GLOB_REAL_I tol_wd, CA_GLOB_REAL_I tol_slope, 
+			      CA_GLOB_REAL_I prev_dt, CA_GLOB_REAL_I upstr_elv)
+{
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+
+  // Create two arrays which will contain the values of WD, WL, ELV
+  CA_ARRAY_CREATE(grid, CA_REAL, WLA,  caNeighbours+1);
+  CA_ARRAY_CREATE(grid, CA_REAL, ELVA,  caNeighbours+1);
+
+  // Create the array which will contain the angle between each cell
+  // and the main one.
+  CA_ARRAY_CREATE(grid, CA_REAL, ANGLE, caNeighbours+1);
+
+  // Create the array which will contain the fluxes on the edges.
+  CA_ARRAY_CREATE(grid, CA_REAL, FLUXES, caEdges+1);
+
+  // Read Mask.
+  CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+
+  // Read bit 0  (false the main cell has nodata)
+  CA_STATE bit0  = caReadBitsState(mask,0,1);
+
+  // If the main cell has no data, do nothing.
+  if(bit0 == 0)
+    return;
+
+  // Retrieve the index of the spatial roughness.
+  CA_STATE idx = caReadBitsState(mask,spos,epos);
+  
+  // Reteieve the inverse roughness from the table.
+  CA_REAL irough = caReadTableReal(grid,IROUGH,idx);
+
+  // Read the water depth (in WLA) and elevation of the neighbourhood cells.
+  caReadCellBuffRealCellArray(grid,WD ,WLA);
+  caReadCellBuffRealCellArray(grid,ELV,ELVA);
+
+  // STORE the main cell water depth
+  CA_REAL wdmain = WLA[0];
+
+  // Compute the water level of the neighbourhood cells
+  for(int k=0; k<=caNeighbours; ++k)
+    WLA[k]+=ELVA[k];
+
+  // Read the fluxes of the main cell.
+  caReadEdgeBuffRealEdgeArray(grid, OUTF,0, FLUXES);
+
+  // Read the angle of each cell.
+  caAngleCellArray(grid,ANGLE);
+
+  // The x and y value of the velocity vector.
+  CA_REAL x = 0.0;
+  CA_REAL y = 0.0;
+
+  // temporary old way
+  //CA_REAL x_old = 0.0;
+  //CA_REAL y_old = 0.0;
+
+  // The denominator of the x and y velocities, i.e. the contribution
+  CA_REAL x_denom = 0.0;
+  CA_REAL y_denom = 0.0;
+
+  // The total amount of influx and outflux in the last update dt for
+  // this central cell.
+  CA_REAL totflux  = 0.0;
+  
+  // The possible dt of this cell.
+  CA_REAL dt = 60.0;
+
+  // The alpha of the time step.
+  CA_REAL alpha = 1000;
+
+  //std::cout << "################################################"<<  std::endl;
+
+  // Cycle through the edges
+  for(int e=1; e<=caEdges; e++)
+  {
+    // Get the legnth and distance of the edge.
+    CA_REAL dx    = caLength(grid, 0, e); 
+    CA_REAL dist  = caDistance(grid,e);
+
+    // Get the radious and cell difference.
+    CA_REAL Hf    = caMaxReal(WLA[0],WLA[e]) - caMaxReal(ELVA[0], ELVA[e]);
+    CA_REAL delwl = caAbsReal(WLA[0]-WLA[e]); 
+    
+    // Default velocity.
+    CA_REAL vh      = 0.0;
+    
+    // In FLUXES  If the edge is one of the edges that
+    // can be updated without overwriting the buffer, the outflux is
+    // positive otherwise is negative. Change that each outflux is
+    // positive and each influx is negative.  
+    if(e<=caUpdateEdges(grid))
+      FLUXES[e] = FLUXES[e];
+    else
+      FLUXES[e] = -FLUXES[e];
+
+    // Get the total amount of out/in flux.
+    totflux += caAbsReal(FLUXES[e]);
+
+	//std::cout << "FLUXES[e]: "<< FLUXES[e] << std::endl;
+	//std::cout << "ANGLE[e]: "<< ANGLE[e] << std::endl;
+	//std::cout << "caCosReal(ANGLE[e]): "<< caCosReal(ANGLE[e]) << std::endl;
+	//std::cout << "caSinReal(ANGLE[e]): "<< caSinReal(ANGLE[e]) << std::endl;
+
+    // Compute the velocity considering only the cell with enough
+    // water and a positive outfluxes.
+    if((FLUXES[e])>0 && Hf >= tol_wd)      
+    {
+      // Compute the Manning and critical velocity.
+      CA_REAL S     = delwl/dist;
+
+      // Find the velocity using the total fluxes
+      vh = FLUXES[e] / (wdmain * dx * prev_dt);
+
+//	  if(e<=caUpdateEdges(grid))
+//      vh = 500;
+//    else
+//      vh = 0;
+ 
+      // Compute the dt if the slope is not too small.
+      if(S>=tol_slope)
+      {
+	// Compute the alpha of the time step.
+	alpha = caMinReal(alpha,((2*1/irough)/caPowReal(Hf,5.0/3.0))*caSqrtReal(S));
+      }
+
+	  // due to the use of radian's, some angles are not represented correctly, catch the obviously ones that should be zero, but we should change this to degrees
+	  CA_REAL cosAngle = caCosReal(ANGLE[e]);
+	  if(caAbsReal(cosAngle)<0.01)
+		cosAngle = 0.0;
+	  CA_REAL sinAngle = caSinReal(ANGLE[e]);
+	  if(caAbsReal(sinAngle)<0.01)
+		sinAngle = 0.0;
+
+      // Compute the velocity vector x and y.
+      x += caAbsReal(dx * cosAngle) * (vh * cosAngle);
+      y += caAbsReal(dx * sinAngle) * (vh * sinAngle);
+
+
+	  // temporary old way of doing things for comparison
+	  //x_old += (vh * cosAngle);
+      //y_old += (vh * sinAngle);
+
+	  //x += vh * cosAngle;
+      //y += vh * sinAngle;
+
+	  // compute the denominators for the contributions from each side
+	  //if(caAbsReal(dx * cosAngle)>0.01)
+	  x_denom += caAbsReal(dx * cosAngle);
+	  
+	  //if(caAbsReal(dx * sinAngle)>0.01)
+	  y_denom += caAbsReal(dx * sinAngle);
+
+	  //std::cout << "e: "<< e << std::endl;
+	  //std::cout << "dx: "<< dx << std::endl;
+	  //std::cout << "caCosReal(ANGLE[e]): "<< caCosReal(ANGLE[e]) << std::endl;
+	  //std::cout << "ANGLE[e]: "<< ANGLE[e] << std::endl;
+	  //std::cout << "x_denom: "<< x_denom << std::endl;
+	  //std::cout << "y_denom: "<< y_denom << std::endl;
+	  //std::cout << "dx * caSinReal(ANGLE[e]): "<< dx * caSinReal(ANGLE[e]) << std::endl;
+
+	  //std::cout << "!x_old: "<< x_old << std::endl;
+	  //std::cout << "!y_old: "<< x_old << std::endl;
+	  
+
+    } 
+	//std::cout << "-------------------------------------------------------"<<  std::endl;
+  }
+
+//  y=500;
+//  x=500;
+
+  // Compuet the possible dt
+  dt = caMinReal(dt,((caArea(grid,0)/4))*alpha);
+  //dt = caMinReal(dt,((caArea(grid,0)/caNeighbours))*alpha); // note the simple adaption, should probably look at von neumann stability analysis
+
+  // compute final velocity contributions
+  if(x_denom!=0.0){
+	x /= x_denom;
+  }
+  if(y_denom!=0.0){
+	y /= y_denom;
+  }
+
+  //std::cout << "!x: "<< x << std::endl;
+  //std::cout << "!x_denom: "<< x_denom << std::endl;
+
+  //std::cout << "!y: "<< y << std::endl;
+  //std::cout << "!y_denom: "<< y_denom << std::endl;
+
+  // temporary bail out tests for larger via new method
+  //if(x_old < x){
+	//std::cout << "!x_old: "<< x_old << std::endl;
+	//std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<< std::endl;
+	//exit(EXIT_FAILURE);
+  //}
+
+  //if(y_old < y){
+	//std::cout << "!y_old: "<< x_old << std::endl;
+	//std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<< std::endl;
+	//exit(EXIT_FAILURE);
+  //}
+
+  
+
+
+  // Compute magnitude and direction
+  CA_REAL speed = 0.0;
+  CA_REAL angle = 0.0;
+
+  //CA_REAL speed_old = 0.0;
+
+  // If there is some velocity.
+  if(caAbsReal(x)>0.0001 || caAbsReal(y)>0.0001)
+  {
+    speed  =caSqrtReal(x*x+y*y);
+    angle  =caAtan2Real(y,x);
+
+	//speed_old  =caSqrtReal(x_old*x_old+y_old*y_old);
+  }
+
+
+  //if(speed>1.0){
+  //if(speed_old < speed){
+	//std::cout << "!OLD speed: "<< speed_old << std::endl;
+	//std::cout << "!speed: "<< speed << std::endl;
+	//std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<< std::endl;
+	//exit(EXIT_FAILURE);
+  //}
+
+
+  //speed = 0.0;
+  // temporarily make it speed the average of number of edges
+  //speed = speed/caNeighbours;
+
+  // Write the results
+  caWriteCellBuffReal(grid,V,speed);
+  caWriteCellBuffReal(grid,A,angle);
+
+  // Write the possible dt.
+  caWriteCellBuffReal(grid,DT,dt);
+  
+  // If there is some in/out flux in the central cell, and the water
+  // level of this cell is over the upstrem elevation thresould. Set
+  // the alarm.
+  if(totflux>0.0 && WLA[0]>upstr_elv)
+  {
+    caActivateAlarm(grid, ALARMS,0);    
+  }
+
+}

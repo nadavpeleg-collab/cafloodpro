@@ -1,0 +1,111 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// Compute the outflow from the water depth using Diffusive model
+CA_FUNCTION outflowDiffusive(CA_GRID grid, CA_EDGEBUFF_REAL_IO OUTF1, 
+			     CA_CELLBUFF_REAL_I ELV, CA_CELLBUFF_REAL_I WD, 
+			     CA_CELLBUFF_STATE_I MASK, CA_ALARMS_O ALARMS, 
+			     CA_TABLE_REAL_I IROUGH, CA_GLOB_STATE_I spos, CA_GLOB_STATE_I epos,
+			     CA_GLOB_REAL_I ignore_wd, CA_GLOB_REAL_I tol_delwl,
+			     CA_GLOB_REAL_I dt)
+{					       
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+    
+  // Read Mask.
+  CA_STATE mask  = caReadCellBuffState(grid,MASK,0);
+
+  // Retrieve the water depth of the main cell.
+  CA_REAL  wdmain = caReadCellBuffReal(grid,WD,0);
+  
+  // Read bit 0  (false the main cell has nodata)
+  CA_STATE bit0  = caReadBitsState(mask,0,1);
+
+  // Retrieve the 0 of the spatial roughness.
+  CA_STATE idx = caReadBitsState(mask,spos,epos);
+
+  // If the main cell has no data (bit0 is false ) or there is no
+  // water do not compute the cell.
+  if(!(bit0 == 0 ||  wdmain < ignore_wd))
+  {
+    // Create two arrays which will contain the values of WD, WL, ELV
+    CA_ARRAY_CREATE(grid, CA_REAL, WLA,  caNeighbours+1);
+    CA_ARRAY_CREATE(grid, CA_REAL, ELVA,  caNeighbours+1);
+
+    // Read the water depth (in WLA) and elevation of the neighbourhood cells.
+    caReadCellBuffRealCellArray(grid,WD ,WLA);
+    caReadCellBuffRealCellArray(grid,ELV,ELVA);
+
+    // Retrieve the inverse roughness from the table.
+    CA_REAL irough = caReadTableReal(grid,IROUGH,idx);
+    
+    // Compute the water level of the neighbourhood cells
+    for(int k=0; k<=caNeighbours; ++k)
+      WLA[k]+=ELVA[k];
+
+    // Maximum Outflux
+    CA_REAL outflux = 0.0;
+
+    // Compute the diffusive equation for each positive cell difference.
+    for(int k=1; k<=caNeighbours; ++k)
+    {   
+      // Get the radious and cell difference.
+      CA_REAL Hf    = caMaxReal(WLA[0],WLA[k]) - caMaxReal(ELVA[0], ELVA[k]);
+      // Lets make sure delwl is not bigger than the water depth
+      // available.
+      CA_REAL delwl = caMinReal(WLA[0] - WLA[k], wdmain);      
+
+      if(delwl>tol_delwl)
+      {
+	// Lets make sure delwl is not bigger than the water depth
+	// available.
+	delwl = caMinReal(delwl,wdmain);
+
+	CA_REAL dx     = caLength(grid,0,k);
+	CA_REAL dist   = caDistance(grid,k);
+	
+	CA_REAL vh  = caMinReal(20.0, caFlowVelocity(irough,caAbsReal(delwl)/dist,Hf,wdmain));
+	CA_REAL flux = vh * Hf * dt * dx;  
+
+	// Maximum outflux
+	outflux = caMaxReal(flux,outflux);
+
+	// If the edge is one of the edges that can be updated without
+	// overwriting the buffer, the outflux is positive otherwise is
+	// negative.
+	if(k > caUpdateEdges(grid))
+	  flux=-flux;
+
+	// Set flux into the edge buffer.
+	caWriteEdgeBuffReal(grid,OUTF1,k,flux);	
+      }
+    }
+
+    // Check that the maximum outflux is larger than zero. Check if
+    // the cell is in the border of the box and if it is the case set an
+    // alarm.
+    CA_STATE box_mask = caBoxStatus(grid);
+    if(outflux>0.0 && box_mask>0)
+      caActivateAlarmMask(grid, ALARMS,box_mask,caNeighbours+1);
+
+  } // Now water or no data cell.
+
+}

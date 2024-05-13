@@ -1,0 +1,46 @@
+/*
+    
+Copyright (c) 2024 Centre for Water Systems,
+                   University of Exeter
+
+This file is part of cafloodpro.
+
+cafloodpro is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+// Write the spatial temporal indices from SRC buffer into the
+// specific bits of the DST buffer.  The code mantains ins DST the
+// original values in all the other bits.  If src is nodata or is
+// greater than the given maximum value, then write zero in the
+// destination.
+CA_FUNCTION writeSTIndices(CA_GRID grid, CA_CELLBUFF_STATE_IO DST, CA_CELLBUFF_STATE_I SRC, 
+			   CA_GLOB_STATE_I start, CA_GLOB_STATE_I stop, 
+			   CA_GLOB_STATE_I nodata, CA_GLOB_STATE_I max)
+{
+  // Initialise the grid
+  CA_GRID_INIT(grid);
+
+  // Read src and dst values..
+  CA_STATE src  = caReadCellBuffState(grid,SRC,0);
+  CA_STATE dst  = caReadCellBuffState(grid,DST,0);
+
+  if(src == nodata || src>max || src<0)
+    src = 0;
+
+  // Write src into dst using the specific bits.
+  dst = caWriteBitsState( src, dst, start, stop);  
+
+  // Update the DST buffer.
+  caWriteCellBuffState(grid,DST,dst);  
+}
