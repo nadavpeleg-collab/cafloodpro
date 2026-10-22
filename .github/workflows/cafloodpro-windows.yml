@@ -1,5 +1,6 @@
 # Experimental Windows GPU build for AlbertChenExeter/cafloodpro.
-# Prepared 22 October 2026. YAML and source paths checked; Windows build not run.
+# Prepared 22 October 2026. Windows build not run.
+# Revision 2: initialize runner-dependent paths in a step via GITHUB_ENV.
 #
 # Browser-only use:
 # 1. Fork https://github.com/AlbertChenExeter/cafloodpro
@@ -34,12 +35,14 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    env:
-      CADDIES_SOURCE: ${{ runner.temp }}/caflood-source/CADDIES
-      CADDIES_BUILD: ${{ runner.temp }}/caflood-build
-      OPENCL_PACKAGES: ${{ runner.temp }}/caflood-vcpkg
-
     steps:
+      - name: Set build paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "CADDIES_SOURCE=$(Join-Path $env:RUNNER_TEMP 'caflood-source/CADDIES')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CADDIES_BUILD=$(Join-Path $env:RUNNER_TEMP 'caflood-build')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENCL_PACKAGES=$(Join-Path $env:RUNNER_TEMP 'caflood-vcpkg')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Check out the Pro application
         uses: actions/checkout@v6
 
