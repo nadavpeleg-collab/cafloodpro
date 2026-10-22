@@ -1,6 +1,5 @@
-# Experimental Windows GPU build for AlbertChenExeter/cafloodpro.
-# Prepared 22 October 2026. Windows build not run.
-# Revision 2: initialize runner-dependent paths in a step via GITHUB_ENV.
+# Windows GPU build for AlbertChenExeter/cafloodpro.
+# Uses a pinned complete CADDIES framework snapshot; see BUILDING-WINDOWS.md.
 #
 # Browser-only use:
 # 1. Fork https://github.com/AlbertChenExeter/cafloodpro
@@ -10,9 +9,9 @@
 # 5. Select Build CAFloodPro for Windows > Run workflow.
 # 6. After success, open the run and download cafloodpro-windows-gpu under Artifacts.
 #
-# This combines the 2024 Pro application with Exeter's published base-120 and
-# OpenCL-110 archives. Compatibility of that combination must be established by
-# the build. A compiler failure is reported, not hidden or treated as success.
+# The framework snapshot includes the raster reader and shared GPU files omitted
+# from the older component ZIP downloads. The hydraulic model is the Pro source
+# checked out from this repository.
 # An actual simulation must subsequently be checked on a compatible GPU with
 # its vendor's OpenCL driver installed. This workflow chooses double precision;
 # the GPU must support double precision. The _64 suffix denotes architecture.
@@ -24,6 +23,8 @@ name: Build CAFloodPro for Windows
 
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/windows-gpu-build]
 
 permissions:
   contents: read
@@ -56,28 +57,19 @@ jobs:
       - name: Assemble the CADDIES framework and Pro application
         run: |
           $ErrorActionPreference = 'Stop'
-          $downloadBase = 'https://www.exeter.ac.uk/v8media/universityofexeter/emps/research/cws/downloads/caddies/'
-          $packages = @(
-            @{
-              Name = 'CADDIES-base-120.zip'
-              Hash = '5df56be27e03187d54d303f1815f8a56f72703320f0148d3148ecdc2d74cba4d'
-            },
-            @{
-              Name = 'CADDIES-CAAPI-impl-OCL1LVNSG-110.zip'
-              Hash = '8353f29d5ffde69198a9011a1328f067b9bcab49f8fc2a2cbdf2ae4230e47263'
-            }
-          )
-          $sourceParent = Split-Path $env:CADDIES_SOURCE -Parent
-          New-Item -ItemType Directory -Force $sourceParent | Out-Null
-          foreach ($package in $packages) {
-            $archive = Join-Path $env:RUNNER_TEMP $package.Name
-            Invoke-WebRequest -Uri ($downloadBase + $package.Name) -OutFile $archive
-            $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actualHash -ne $package.Hash) {
-              throw "Archive changed: $($package.Name). Review it before updating the checksum."
-            }
-            Expand-Archive -LiteralPath $archive -DestinationPath $sourceParent -Force
+          $frameworkCommit = 'ef408ee3b6126fadd85cb7c3a2bc73adfc3d8011'
+          $frameworkHash = '10936983b1440122217440a42513c86bfdad703c06090ca50ce06d82c3bbdad3'
+          $archive = Join-Path $env:RUNNER_TEMP 'caflood-framework.zip'
+          Invoke-WebRequest -Uri "https://codeload.github.com/WaterDesk/caflood/zip/$frameworkCommit" -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $frameworkHash) {
+            throw 'Framework archive checksum does not match the reviewed snapshot.'
           }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'caflood-framework'
+          Expand-Archive -LiteralPath $archive -DestinationPath $unpacked -Force
+          New-Item -ItemType Directory -Force $env:CADDIES_SOURCE | Out-Null
+          Copy-Item "$unpacked/caflood-$frameworkCommit/Source/*" $env:CADDIES_SOURCE -Recurse -Force
+          # Keep the complete framework while selecting only the Pro application.
+          Get-ChildItem "$env:CADDIES_SOURCE/apps" -Directory | Remove-Item -Recurse -Force
           $app = Join-Path $env:CADDIES_SOURCE 'apps/cafloodpro'
           New-Item -ItemType Directory -Force $app | Out-Null
           Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Force |
@@ -119,8 +111,7 @@ jobs:
             '-DCAAPI_NETCDF_OPTION=OFF',
             "-DOPENCL_INCLUDE_DIRS=$opencl/include",
             "-DOPENCL_LIBRARIES=$opencl/lib/OpenCL.lib",
-            "-D_OPENCL_CPP_INCLUDE_DIRS=$impl/extra",
-            '-DCMAKE_CXX_FLAGS=/D_CRT_SECURE_NO_WARNINGS /DCL_TARGET_OPENCL_VERSION=120 /DCL_USE_DEPRECATED_OPENCL_1_1_APIS /DCL_USE_DEPRECATED_OPENCL_1_2_APIS'
+            "-D_OPENCL_CPP_INCLUDE_DIRS=$impl/extra"
           )
           cmake @arguments
           if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed. Review the logs.' }
@@ -130,6 +121,17 @@ jobs:
           $ErrorActionPreference = 'Stop'
           cmake --build "$env:CADDIES_BUILD" --config Release --target cafloodpro_GPU_64 --parallel 2
           if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Review the compiler errors in this step.' }
+
+      - name: Check command-line startup
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = @(Get-ChildItem $env:CADDIES_BUILD -Filter 'cafloodpro_GPU_64.exe' -Recurse)
+          if ($exe.Count -ne 1) { throw 'Expected exactly one CAFloodPro executable.' }
+          $env:PATH = "$env:OPENCL_PACKAGES/x64-windows/bin;$env:PATH"
+          foreach ($option in @('/version', '/help', '/test')) {
+            & $exe[0].FullName $option
+            if ($LASTEXITCODE -ne 0) { throw "Command-line check failed: $option" }
+          }
 
       - name: Package the executable, source, and build information
         run: |
@@ -160,9 +162,9 @@ jobs:
             'Implementation: OpenCL GPU',
             'Precision: double',
             'GDAL: disabled; NetCDF: disabled',
-            'Base archive SHA256: 5df56be27e03187d54d303f1815f8a56f72703320f0148d3148ecdc2d74cba4d',
-            'OpenCL implementation archive SHA256: 8353f29d5ffde69198a9011a1328f067b9bcab49f8fc2a2cbdf2ae4230e47263',
-            'Build result: compilation succeeded; no flood simulation has been validated.',
+            'Framework: WaterDesk/caflood at ef408ee3b6126fadd85cb7c3a2bc73adfc3d8011',
+            'Framework archive SHA256: 10936983b1440122217440a42513c86bfdad703c06090ca50ce06d82c3bbdad3',
+            'Build result: compilation and command-line checks succeeded; no GPU flood simulation has been validated.',
             'Install the GPU vendor OpenCL driver on the simulation computer.',
             'The Microsoft Visual C++ x64 Redistributable may also be required.',
             'Run cafloodpro_GPU_64.exe /help in a terminal to inspect the options.'
