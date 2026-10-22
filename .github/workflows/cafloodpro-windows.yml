@@ -1,0 +1,174 @@
+# Experimental Windows GPU build for AlbertChenExeter/cafloodpro.
+# Prepared 22 October 2026. YAML and source paths checked; Windows build not run.
+#
+# Browser-only use:
+# 1. Fork https://github.com/AlbertChenExeter/cafloodpro
+# 2. In your fork choose Add file > Create new file.
+# 3. Name it .github/workflows/cafloodpro-windows.yml and paste this entire file.
+# 4. Commit it to the default branch, then open Actions and enable workflows.
+# 5. Select Build CAFloodPro for Windows > Run workflow.
+# 6. After success, open the run and download cafloodpro-windows-gpu under Artifacts.
+#
+# This combines the 2024 Pro application with Exeter's published base-120 and
+# OpenCL-110 archives. Compatibility of that combination must be established by
+# the build. A compiler failure is reported, not hidden or treated as success.
+# An actual simulation must subsequently be checked on a compatible GPU with
+# its vendor's OpenCL driver installed. This workflow chooses double precision;
+# the GPU must support double precision. The _64 suffix denotes architecture.
+# GDAL and NetCDF support are disabled. ASCII-grid inputs remain the intended
+# first use case. OpenCL events are disabled following the older NVIDIA advice.
+# For an Intel OpenCL device, review CAAPI_OCL_EVENTS before using the executable.
+
+name: Build CAFloodPro for Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-gpu:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CADDIES_SOURCE: ${{ runner.temp }}/caflood-source/CADDIES
+      CADDIES_BUILD: ${{ runner.temp }}/caflood-build
+      OPENCL_PACKAGES: ${{ runner.temp }}/caflood-vcpkg
+
+    steps:
+      - name: Check out the Pro application
+        uses: actions/checkout@v6
+
+      - name: Install CMake 3 for the older framework
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install 'cmake>=3.25,<4'
+          if ($LASTEXITCODE -ne 0) { throw 'CMake installation failed.' }
+          cmake --version
+
+      - name: Assemble the CADDIES framework and Pro application
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadBase = 'https://www.exeter.ac.uk/v8media/universityofexeter/emps/research/cws/downloads/caddies/'
+          $packages = @(
+            @{
+              Name = 'CADDIES-base-120.zip'
+              Hash = '5df56be27e03187d54d303f1815f8a56f72703320f0148d3148ecdc2d74cba4d'
+            },
+            @{
+              Name = 'CADDIES-CAAPI-impl-OCL1LVNSG-110.zip'
+              Hash = '8353f29d5ffde69198a9011a1328f067b9bcab49f8fc2a2cbdf2ae4230e47263'
+            }
+          )
+          $sourceParent = Split-Path $env:CADDIES_SOURCE -Parent
+          New-Item -ItemType Directory -Force $sourceParent | Out-Null
+          foreach ($package in $packages) {
+            $archive = Join-Path $env:RUNNER_TEMP $package.Name
+            Invoke-WebRequest -Uri ($downloadBase + $package.Name) -OutFile $archive
+            $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $package.Hash) {
+              throw "Archive changed: $($package.Name). Review it before updating the checksum."
+            }
+            Expand-Archive -LiteralPath $archive -DestinationPath $sourceParent -Force
+          }
+          $app = Join-Path $env:CADDIES_SOURCE 'apps/cafloodpro'
+          New-Item -ItemType Directory -Force $app | Out-Null
+          Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Force |
+            Where-Object { $_.Name -notin @('.git', '.github') } |
+            Copy-Item -Destination $app -Recurse -Force
+          foreach ($required in @('CMakeLists.txt', 'mains/main.cpp', 'Version.txt')) {
+            if (-not (Test-Path (Join-Path $app $required))) {
+              throw "Missing application file: $required. Use a fork of the Pro repository."
+            }
+          }
+
+      - name: Install the OpenCL development libraries
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) { $vcpkgRoot = 'C:/vcpkg' }
+          $vcpkg = Join-Path $vcpkgRoot 'vcpkg.exe'
+          if (-not (Test-Path $vcpkg)) { throw 'The runner does not provide vcpkg at the expected path.' }
+          & $vcpkg install 'opencl:x64-windows' "--x-install-root=$env:OPENCL_PACKAGES"
+          if ($LASTEXITCODE -ne 0) { throw 'OpenCL dependency installation failed.' }
+          & $vcpkg list "--x-install-root=$env:OPENCL_PACKAGES"
+
+      - name: Configure the 64-bit GPU executable
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = $env:CADDIES_SOURCE.Replace('\', '/')
+          $build = $env:CADDIES_BUILD.Replace('\', '/')
+          $opencl = ($env:OPENCL_PACKAGES.Replace('\', '/') + '/x64-windows')
+          $impl = "$source/impls/square-cell/vn-neighbours/1-levels/opencl"
+          if (-not (Test-Path "$opencl/lib/OpenCL.lib")) { throw 'OpenCL.lib is missing.' }
+          $arguments = @(
+            '-S', $source, '-B', $build,
+            '-G', 'Visual Studio 17 2022', '-A', 'x64',
+            "-DCAAPI_SPECIFIC_IMPL_DIR=$impl",
+            '-DCAAPI_DEVICE=GPU',
+            '-DCAAPI_REAL_PRECISION=double',
+            '-DCAAPI_OCL_EVENTS=disable',
+            '-DCAAPI_GDAL_OPTION=OFF',
+            '-DCAAPI_NETCDF_OPTION=OFF',
+            "-DOPENCL_INCLUDE_DIRS=$opencl/include",
+            "-DOPENCL_LIBRARIES=$opencl/lib/OpenCL.lib",
+            "-D_OPENCL_CPP_INCLUDE_DIRS=$impl/extra",
+            '-DCMAKE_CXX_FLAGS=/D_CRT_SECURE_NO_WARNINGS /DCL_TARGET_OPENCL_VERSION=120 /DCL_USE_DEPRECATED_OPENCL_1_1_APIS /DCL_USE_DEPRECATED_OPENCL_1_2_APIS'
+          )
+          cmake @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed. Review the logs.' }
+
+      - name: Compile CAFloodPro
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --build "$env:CADDIES_BUILD" --config Release --target cafloodpro_GPU_64 --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Review the compiler errors in this step.' }
+
+      - name: Package the executable, source, and build information
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = Join-Path $env:RUNNER_TEMP 'cafloodpro-package'
+          New-Item -ItemType Directory -Force $bundle | Out-Null
+          $executables = @(Get-ChildItem $env:CADDIES_BUILD -Filter 'cafloodpro_GPU_64.exe' -Recurse)
+          if ($executables.Count -ne 1) { throw 'Expected exactly one compiled CAFloodPro executable.' }
+          Copy-Item $executables[0].FullName $bundle
+          $opencl = Join-Path $env:OPENCL_PACKAGES 'x64-windows'
+          if (Test-Path "$opencl/bin/OpenCL.dll") { Copy-Item "$opencl/bin/OpenCL.dll" $bundle }
+          $app = Join-Path $env:CADDIES_SOURCE 'apps/cafloodpro'
+          Get-ChildItem $app -Filter 'config_*.csv' | Copy-Item -Destination $bundle
+          Copy-Item (Join-Path $app 'LICENSE') (Join-Path $bundle 'CAFloodPro-LICENSE.txt')
+          Copy-Item "$env:GITHUB_WORKSPACE/.github/workflows/cafloodpro-windows.yml" $bundle
+          Copy-Item "$env:CADDIES_BUILD/CMakeCache.txt" $bundle
+          if (Test-Path "$opencl/share") {
+            New-Item -ItemType Directory -Force "$bundle/dependency-licenses" | Out-Null
+            Get-ChildItem "$opencl/share" -Directory -Filter '*opencl*' |
+              Copy-Item -Destination "$bundle/dependency-licenses" -Recurse
+          }
+          # Include the corresponding application/framework source with the build.
+          Compress-Archive -Path "$env:CADDIES_SOURCE/*" -DestinationPath "$bundle/CADDIES-source.zip"
+          @(
+            "Repository: $env:GITHUB_REPOSITORY",
+            "Application commit: $env:GITHUB_SHA",
+            'Architecture: Windows x64',
+            'Implementation: OpenCL GPU',
+            'Precision: double',
+            'GDAL: disabled; NetCDF: disabled',
+            'Base archive SHA256: 5df56be27e03187d54d303f1815f8a56f72703320f0148d3148ecdc2d74cba4d',
+            'OpenCL implementation archive SHA256: 8353f29d5ffde69198a9011a1328f067b9bcab49f8fc2a2cbdf2ae4230e47263',
+            'Build result: compilation succeeded; no flood simulation has been validated.',
+            'Install the GPU vendor OpenCL driver on the simulation computer.',
+            'The Microsoft Visual C++ x64 Redistributable may also be required.',
+            'Run cafloodpro_GPU_64.exe /help in a terminal to inspect the options.'
+          ) | Set-Content "$bundle/BUILD-INFO.txt"
+
+      - name: Make the package available to download
+        uses: actions/upload-artifact@v4
+        with:
+          name: cafloodpro-windows-gpu
+          path: ${{ runner.temp }}/cafloodpro-package/
+          if-no-files-found: error
+          retention-days: 7
